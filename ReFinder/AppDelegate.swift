@@ -1,23 +1,78 @@
 import Cocoa
 import ApplicationServices
+import os.log
+
+// Global state accessible from C callback
+var globalIsEnabled = true
+var globalAlternativeAppPath: String? = nil
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
-    
+
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
+    }
+
+    private let logger = Logger(subsystem: "com.example.ReFinder", category: "main")
+
     private var statusItem: NSStatusItem!
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    
-    // Configuration
-    static var isEnabled = true
-    static var alternativeAppBundleId: String? = nil  // nil = just block, otherwise launch this app
-    static var alternativeAppPath: String? = nil
+
+    // Configuration - now using global variables
+    var isEnabled: Bool {
+        get { globalIsEnabled }
+        set { globalIsEnabled = newValue }
+    }
+    var alternativeAppBundleId: String? = nil
+    var alternativeAppPath: String? {
+        get { globalAlternativeAppPath }
+        set { globalAlternativeAppPath = newValue }
+    }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        logger.info("ReFinder: applicationDidFinishLaunching started")
+
+        // Also write to file for debugging
+        logToFile("applicationDidFinishLaunching started")
+
         setupMenuBarItem()
+        logger.info("ReFinder: setupMenuBarItem completed")
+        logToFile("setupMenuBarItem completed")
+
         checkAccessibilityPermissions()
+        logger.info("ReFinder: checkAccessibilityPermissions completed")
+        logToFile("checkAccessibilityPermissions completed")
+
         setupEventTap()
+        logger.info("ReFinder: setupEventTap completed")
+        logToFile("setupEventTap completed")
+
         loadSettings()
+        logger.info("ReFinder: loadSettings completed - App fully initialized")
+        logToFile("loadSettings completed - App fully initialized")
+    }
+
+    private func logToFile(_ message: String) {
+        let logFile = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("ReFinder-debug.log")
+        let timestamp = Date()
+        let logMessage = "[\(timestamp)] \(message)\n"
+
+        if let data = logMessage.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logFile.path) {
+                if let fileHandle = try? FileHandle(forWritingTo: logFile) {
+                    fileHandle.seekToEndOfFile()
+                    fileHandle.write(data)
+                    fileHandle.closeFile()
+                }
+            } else {
+                try? data.write(to: logFile)
+            }
+        }
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -27,17 +82,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Bar Setup
     
     private func setupMenuBarItem() {
+        NSLog("ReFinder: Creating status bar item")
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        
+        NSLog("ReFinder: Status item created: \(String(describing: statusItem))")
+
         if let button = statusItem.button {
+            NSLog("ReFinder: Setting up button image")
+            // Use simple SF Symbol that works
             button.image = NSImage(systemSymbolName: "folder.badge.minus", accessibilityDescription: "ReFinder")
             button.image?.isTemplate = true
+            NSLog("ReFinder: Button image set")
+        } else {
+            NSLog("ReFinder: ERROR - Status item button is nil!")
         }
         
         let menu = NSMenu()
         
         let enabledItem = NSMenuItem(title: "Enabled", action: #selector(toggleEnabled(_:)), keyEquivalent: "")
-        enabledItem.state = AppDelegate.isEnabled ? .on : .off
+        enabledItem.state = self.isEnabled ? .on : .off
         menu.addItem(enabledItem)
         
         menu.addItem(NSMenuItem.separator())
@@ -48,7 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let redirectItem = NSMenuItem(title: "Open Alternative App...", action: #selector(chooseAlternativeApp(_:)), keyEquivalent: "")
         menu.addItem(redirectItem)
         
-        if let appPath = AppDelegate.alternativeAppPath {
+        if let appPath = self.alternativeAppPath {
             let currentAppItem = NSMenuItem(title: "Current: \(URL(fileURLWithPath: appPath).lastPathComponent)", action: nil, keyEquivalent: "")
             currentAppItem.isEnabled = false
             menu.addItem(currentAppItem)
@@ -63,6 +125,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
         
         statusItem.menu = menu
+        NSLog("ReFinder: Menu assigned to status item. Menu items count: \(menu.items.count)")
+        NSLog("ReFinder: Status item is visible: \(statusItem.isVisible)")
     }
     
     private func updateMenu() {
@@ -70,13 +134,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update enabled state
         if let enabledItem = menu.items.first(where: { $0.action == #selector(toggleEnabled(_:)) }) {
-            enabledItem.state = AppDelegate.isEnabled ? .on : .off
+            enabledItem.state = self.isEnabled ? .on : .off
         }
-        
+
         // Remove old "Current:" item and add updated one
         menu.items.removeAll(where: { $0.title.hasPrefix("Current:") })
-        
-        if let appPath = AppDelegate.alternativeAppPath {
+
+        if let appPath = self.alternativeAppPath {
             let currentAppItem = NSMenuItem(title: "Current: \(URL(fileURLWithPath: appPath).lastPathComponent)", action: nil, keyEquivalent: "")
             currentAppItem.isEnabled = false
             // Insert after "Open Alternative App..."
@@ -87,7 +151,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Update button image based on state
         if let button = statusItem.button {
-            if AppDelegate.isEnabled {
+            if self.isEnabled {
                 button.image = NSImage(systemSymbolName: "folder.badge.minus", accessibilityDescription: "ReFinder (Active)")
             } else {
                 button.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "ReFinder (Inactive)")
@@ -99,14 +163,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
     
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
-        AppDelegate.isEnabled.toggle()
+        self.isEnabled.toggle()
         saveSettings()
         updateMenu()
     }
-    
+
     @objc private func setBlockMode(_ sender: NSMenuItem) {
-        AppDelegate.alternativeAppBundleId = nil
-        AppDelegate.alternativeAppPath = nil
+        self.alternativeAppBundleId = nil
+        self.alternativeAppPath = nil
         saveSettings()
         updateMenu()
         
@@ -127,10 +191,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openPanel.allowsMultipleSelection = false
         
         if openPanel.runModal() == .OK, let url = openPanel.url {
-            AppDelegate.alternativeAppPath = url.path
+            self.alternativeAppPath = url.path
             // Get bundle identifier
             if let bundle = Bundle(url: url) {
-                AppDelegate.alternativeAppBundleId = bundle.bundleIdentifier
+                self.alternativeAppBundleId = bundle.bundleIdentifier
             }
             saveSettings()
             updateMenu()
@@ -148,14 +212,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.messageText = "ReFinder"
         alert.informativeText = """
             Version 0.0.1
-            
+
             This app allows you to:
             • Block Finder from opening when clicking its Dock icon
             • Redirect Finder Dock clicks to an alternative file manager
-            
+
             Requires Accessibility permissions to function.
-            
-            https://github.com/andrzej/ReFinder
+
+            https://github.com/barabasz/refinder
             """
         alert.alertStyle = .informational
         alert.runModal()
@@ -164,10 +228,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Accessibility Permissions
     
     private func checkAccessibilityPermissions() {
-        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue(): true]
-        let accessEnabled = AXIsProcessTrustedWithOptions(options)
-        
+        NSLog("ReFinder: Checking Accessibility permissions")
+        // Don't prompt automatically - just check status
+        let accessEnabled = AXIsProcessTrusted()
+        NSLog("ReFinder: Accessibility permission status: \(accessEnabled)")
+
         if !accessEnabled {
+            NSLog("ReFinder: Showing Accessibility permission alert")
             let alert = NSAlert()
             alert.messageText = "Accessibility Permission Required"
             alert.informativeText = """
@@ -190,9 +257,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Event Tap
     
     private func setupEventTap() {
+        NSLog("ReFinder: Setting up event tap")
         // Create event mask for left mouse down
         let eventMask: CGEventMask = (1 << CGEventType.leftMouseDown.rawValue)
-        
+
         // Create event tap
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -202,9 +270,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             callback: eventTapCallback,
             userInfo: nil
         ) else {
-            print("Failed to create event tap. Accessibility permission may be missing.")
+            NSLog("ReFinder: ERROR - Failed to create event tap. Accessibility permission may be missing.")
             return
         }
+
+        NSLog("ReFinder: Event tap created successfully")
         
         eventTap = tap
         
@@ -214,8 +284,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Enable the tap
         CGEvent.tapEnable(tap: tap, enable: true)
-        
-        print("Event tap created successfully")
+
+        NSLog("ReFinder: Event tap enabled and ready")
     }
     
     private func removeEventTap() {
@@ -234,37 +304,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     private func loadSettings() {
         let defaults = UserDefaults.standard
-        AppDelegate.isEnabled = defaults.bool(forKey: "isEnabled")
-        AppDelegate.alternativeAppBundleId = defaults.string(forKey: "alternativeAppBundleId")
-        AppDelegate.alternativeAppPath = defaults.string(forKey: "alternativeAppPath")
-        
+        self.isEnabled = defaults.bool(forKey: "isEnabled")
+        self.alternativeAppBundleId = defaults.string(forKey: "alternativeAppBundleId")
+        self.alternativeAppPath = defaults.string(forKey: "alternativeAppPath")
+
         // Default to enabled if first launch
         if defaults.object(forKey: "isEnabled") == nil {
-            AppDelegate.isEnabled = true
+            self.isEnabled = true
         }
-        
+
         updateMenu()
     }
-    
+
     private func saveSettings() {
         let defaults = UserDefaults.standard
-        defaults.set(AppDelegate.isEnabled, forKey: "isEnabled")
-        defaults.set(AppDelegate.alternativeAppBundleId, forKey: "alternativeAppBundleId")
-        defaults.set(AppDelegate.alternativeAppPath, forKey: "alternativeAppPath")
+        defaults.set(self.isEnabled, forKey: "isEnabled")
+        defaults.set(self.alternativeAppBundleId, forKey: "alternativeAppBundleId")
+        defaults.set(self.alternativeAppPath, forKey: "alternativeAppPath")
     }
 }
 
-// MARK: - Event Tap Callback (must be a C function)
+// MARK: - Event Tap Callback (must be a C function - GLOBAL, not private!)
 
-private func eventTapCallback(
+func eventTapCallback(
     proxy: CGEventTapProxy,
     type: CGEventType,
     event: CGEvent,
     refcon: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
-    
+
     // Check if our interception is enabled
-    guard AppDelegate.isEnabled else {
+    guard globalIsEnabled else {
         return Unmanaged.passRetained(event)
     }
     
@@ -281,16 +351,20 @@ private func eventTapCallback(
     guard type == .leftMouseDown else {
         return Unmanaged.passRetained(event)
     }
-    
+
     // Get click location
     let clickLocation = event.location
-    
+    NSLog("ReFinder: Mouse click detected at x=\(clickLocation.x), y=\(clickLocation.y)")
+
     // Check if click is on Dock's Finder icon
-    if isClickOnFinderDockIcon(at: clickLocation) {
-        print("Finder Dock icon click intercepted!")
-        
+    let isFinderClick = isClickOnFinderDockIcon(at: clickLocation)
+    NSLog("ReFinder: isClickOnFinderDockIcon returned: \(isFinderClick)")
+
+    if isFinderClick {
+        NSLog("ReFinder: Finder Dock icon click intercepted!")
+
         // Handle the redirect/block
-        if let appPath = AppDelegate.alternativeAppPath {
+        if let appPath = globalAlternativeAppPath {
             // Launch alternative app
             DispatchQueue.main.async {
                 let url = URL(fileURLWithPath: appPath)
@@ -311,59 +385,75 @@ private func eventTapCallback(
 
 // MARK: - Dock Detection
 
-private func isClickOnFinderDockIcon(at point: CGPoint) -> Bool {
+func isClickOnFinderDockIcon(at point: CGPoint) -> Bool {
+    NSLog("ReFinder: Checking if click at (\(point.x), \(point.y)) is on Finder Dock icon")
+
     // Get Dock process
     guard let dockApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else {
+        NSLog("ReFinder: Could not find Dock process")
         return false
     }
-    
+    NSLog("ReFinder: Found Dock process with PID: \(dockApp.processIdentifier)")
+
     // Check if click is in Dock area
-    guard isPointInDockArea(point) else {
+    let inDockArea = isPointInDockArea(point)
+    NSLog("ReFinder: Point in Dock area: \(inDockArea)")
+    guard inDockArea else {
         return false
     }
-    
+
     // Use Accessibility API to find what's under the click
     let dockElement = AXUIElementCreateApplication(dockApp.processIdentifier)
-    
+
     // Get the element at the click point
     var elementAtPoint: AXUIElement?
     let result = AXUIElementCopyElementAtPosition(dockElement, Float(point.x), Float(point.y), &elementAtPoint)
-    
+
+    NSLog("ReFinder: AXUIElementCopyElementAtPosition result: \(result.rawValue)")
     guard result == .success, let element = elementAtPoint else {
+        NSLog("ReFinder: Failed to get element at position or element is nil")
         return false
     }
-    
+
     // Check if this element is Finder's dock icon
-    return isFinderDockIcon(element)
+    let isFinder = isFinderDockIcon(element)
+    NSLog("ReFinder: Element is Finder icon: \(isFinder)")
+    return isFinder
 }
 
-private func isPointInDockArea(_ point: CGPoint) -> Bool {
+func isPointInDockArea(_ point: CGPoint) -> Bool {
     // Get screen with Dock
     guard let screen = NSScreen.main else { return false }
-    
+
     let screenFrame = screen.frame
     let dockHeight: CGFloat = 80  // Approximate, could be dynamic
-    
+
+    NSLog("ReFinder: Screen frame: \(screenFrame), Dock height threshold: \(dockHeight)")
+
     // Check common Dock positions
     // Bottom Dock
     if point.y <= dockHeight {
+        NSLog("ReFinder: Click in bottom Dock area (y=\(point.y) <= \(dockHeight))")
         return true
     }
-    
+
     // Left Dock
     if point.x <= dockHeight {
+        NSLog("ReFinder: Click in left Dock area (x=\(point.x) <= \(dockHeight))")
         return true
     }
-    
+
     // Right Dock
     if point.x >= screenFrame.width - dockHeight {
+        NSLog("ReFinder: Click in right Dock area (x=\(point.x) >= \(screenFrame.width - dockHeight))")
         return true
     }
-    
+
+    NSLog("ReFinder: Click NOT in any Dock area")
     return false
 }
 
-private func isFinderDockIcon(_ element: AXUIElement) -> Bool {
+func isFinderDockIcon(_ element: AXUIElement) -> Bool {
     // Get the title/description of the element
     var titleValue: CFTypeRef?
     let titleResult = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleValue)
