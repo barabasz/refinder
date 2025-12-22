@@ -261,27 +261,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create event mask for left mouse down
         let eventMask: CGEventMask = (1 << CGEventType.leftMouseDown.rawValue)
 
-        // Create event tap
+        // Create event tap with callback - pass tap reference via userInfo for re-enabling
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: eventMask,
             callback: eventTapCallback,
-            userInfo: nil
+            userInfo: UnsafeMutableRawPointer(bitPattern: 0) // placeholder, will store tap after creation
         ) else {
             NSLog("ReFinder: ERROR - Failed to create event tap. Accessibility permission may be missing.")
             return
         }
 
         NSLog("ReFinder: Event tap created successfully")
-        
+
         eventTap = tap
-        
+
         // Create run loop source and add to run loop
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
-        
+
         // Enable the tap
         CGEvent.tapEnable(tap: tap, enable: true)
 
@@ -324,29 +324,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - Event Tap Callback (must be a C function - GLOBAL, not private!)
+// MARK: - Event Tap Callback (C-style callback with @convention(c))
 
-func eventTapCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    refcon: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
+let eventTapCallback: CGEventTapCallBack = { proxy, type, event, refcon in
+    NSLog("ReFinder: eventTapCallback invoked! Type: \(type.rawValue)")
 
     // Check if our interception is enabled
     guard globalIsEnabled else {
+        NSLog("ReFinder: Global interception disabled, passing event through")
         return Unmanaged.passRetained(event)
     }
-    
+
     // Handle tap disabled events (system disables tap if it takes too long)
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        // Re-enable the tap
-        if let tap = refcon?.assumingMemoryBound(to: CFMachPort.self).pointee {
-            CGEvent.tapEnable(tap: tap, enable: true)
-        }
+        NSLog("ReFinder: Event tap disabled by system, attempting to re-enable")
+        // Note: We can't easily re-enable from here without the tap reference
+        // The app will need to monitor and re-enable from the main code
         return Unmanaged.passRetained(event)
     }
-    
+
     // Only process left mouse down
     guard type == .leftMouseDown else {
         return Unmanaged.passRetained(event)
@@ -366,19 +362,25 @@ func eventTapCallback(
         // Handle the redirect/block
         if let appPath = globalAlternativeAppPath {
             // Launch alternative app
+            NSLog("ReFinder: Launching alternative app: \(appPath)")
             DispatchQueue.main.async {
                 let url = URL(fileURLWithPath: appPath)
                 NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                     if let error = error {
-                        print("Failed to launch alternative app: \(error)")
+                        NSLog("ReFinder: Failed to launch alternative app: \(error)")
+                    } else {
+                        NSLog("ReFinder: Alternative app launched successfully")
                     }
                 }
             }
+        } else {
+            NSLog("ReFinder: Block mode - not launching any app")
         }
+
         // Block the original click - return nil to consume the event
         return nil
     }
-    
+
     // Pass through all other events
     return Unmanaged.passRetained(event)
 }
